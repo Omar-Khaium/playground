@@ -1,0 +1,125 @@
+name: Continuous Integration
+
+on:
+  pull_request:
+    branches:
+      - dev
+
+jobs:
+  setup_flutter:
+    runs-on: ubuntu-latest
+    outputs:
+      steps: ${{ steps.*.id }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Set up Flutter
+        id: setup_flutter
+        uses: subosito/flutter-action@v2
+        with:
+            flutter-version: '3.16.0'
+            channel: 'stable'
+
+  lint:
+    needs: setup_flutter
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Lint code
+        run: flutter analyze
+
+  code_review:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code review with lint
+        run: flutter analyze
+
+  test:
+    needs: code_review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run tests
+        run: flutter test
+
+  merge_with_dev:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '2.x'
+
+      - name: Merge with dev
+        run: |
+          git checkout dev
+          git merge --no-ff ${{ github.event.pull_request.head.ref }}
+          git push
+
+  create_tag:
+    needs: merge_with_dev
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '2.x'
+
+      - name: Get version from pubspec.yaml
+        id: get_version
+        run: | 
+            echo "::set-output name=version::$(cat pubspec.yaml | grep version: | awk '{print $2}' | sed 's/ //g')"
+
+      - name: Create tag with version
+        run: |
+          git tag -a v${{ steps.get_version.outputs.version }} -m "Version ${{ steps.get_version.outputs.version }}"
+          git push origin v${{ steps.get_version.outputs.version }}
+
+  delete_branch:
+    needs: create_tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Delete branch
+        run: git push origin --delete ${{ github.event.pull_request.head.ref }}
+
+  notify_slack_on_success:
+    runs-on: ubuntu-latest
+    needs:
+      - delete_branch
+    if: success()
+    steps:
+      - name: Notify on success
+        uses: rtCamp/action-slack-notify@v2
+        with:
+          slack-channel: '#success-channel'
+          slack-text: |
+            Workflow for branch ${{ github.ref }} completed successfully!
+          slack-emoji: ':tada:'
+
+  notify_slack_on_failure:
+    runs-on: ubuntu-latest
+    needs:
+      - delete_branch
+    if: failure()
+    steps:
+      - name: Notify on failure
+        uses: rtCamp/action-slack-notify@v2
+        with:
+          slack-channel: '#failure-channel'
+          slack-text: |
+            Workflow for branch ${{ github.ref }} failed.
+          slack-emoji: ':x:'
+
